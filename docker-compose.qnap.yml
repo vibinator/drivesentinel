@@ -17,6 +17,6 @@ services:
       - /dev:/dev                                   # lets the container see every disk
       - /run/udev:/run/udev:ro
     environment:
-      - TZ=America/New_York               # change to your timezone
+      - TZ=Europe/London               # change to your timezone
       # - AUTH_USER=admin                 # optional login for the web UI
       # - AUTH_PASS=change-me

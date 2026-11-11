@@ -13,7 +13,7 @@ services:
       - /run/udev:/run/udev:ro
       - ./data:/data                    # database, settings, optional model_stats.json override
     environment:
-      - TZ=America/New_York             # change to your timezone
+      - TZ=Europe/London             # change to your timezone
       # - AUTH_USER=admin               # optional HTTP basic auth for the web UI
       # - AUTH_PASS=change-me
       # - MOCK=1                        # demo mode with simulated drives
