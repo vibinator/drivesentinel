@@ -186,8 +186,9 @@ def membership(arrays):
     for a in arrays:
         for m in a["members"]:
             out.setdefault(m["disk"], []).append({
-                "array": a["name"], "level": a["level"], "status": a["status"], "role": a["role"],
-                "redundancy_left": a["redundancy_left"], "member_failed": m["failed"], "spare": m["spare"],
+                "array": a["name"], "level": m.get("vdev_type") or a["level"], "status": a["status"],
+                "role": a["role"], "redundancy_left": m.get("vdev_left", a["redundancy_left"]),
+                "member_failed": m["failed"], "spare": m["spare"],
                 "errors": {k: m.get(k, 0) for k in ("read", "write", "cksum")} if a.get("zfs") else None})
     return out
 

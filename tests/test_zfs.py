@@ -94,6 +94,18 @@ class ZfsParse(unittest.TestCase):
         self.assertEqual(mem["sdc"][0]["errors"], {"read": 0, "write": 0, "cksum": 7})
         self.assertEqual(mem["sda"][0]["level"], "raidz1")
 
+    def test_tiered_pool_and_qnap_system_pool(self):
+        """Real QuTS hero layout: one pool with an SSD mirror and an HDD RAIDZ1, plus zpoolExt."""
+        text = HEALTHY.replace("\t  raidz1-0 ", "\t  mirror-0                                  ONLINE       0     0     0\n"
+                               "\t    nvme0n1p3                               ONLINE       0     0     0\n"
+                               "\t    nvme1n1p3                               ONLINE       0     0     0\n\t  raidz1-1 ")
+        text = text.replace("zpool2", "zpoolExt2")
+        p1, p2 = zfs.resolve_members(zfs.parse_status(text), DRIVES)
+        self.assertEqual((p1["level"], p1["role"], p2["role"]), ("mixed", "data", "system"))
+        mem = raid.membership([p1, p2])
+        self.assertEqual((mem["nvme0"][0]["level"], mem["nvme0"][0]["redundancy_left"]), ("mirror", 1))
+        self.assertEqual((mem["sda"][0]["level"], mem["sda"][0]["redundancy_left"]), ("raidz1", 1))
+
     def test_degraded_resilver(self):
         p = zfs.parse_status(DEGRADED)[0]
         self.assertEqual((p["status"], p["sync"], p["sync_pct"]), ("rebuilding", "recovery", 34.5))

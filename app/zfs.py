@@ -118,7 +118,10 @@ def parse_status(text):
         for v in data:
             n = len(v["leaves"])
             red = {"raidz": 1, "raidz1": 1, "raidz2": 2, "raidz3": 3, "mirror": max(0, n - 1)}.get(v["type"], 0)
-            left.append((red, red - sum(1 for l in v["leaves"] if l["failed"])))
+            v_left = red - sum(1 for l in v["leaves"] if l["failed"])
+            left.append((red, v_left))
+            for leaf in v["leaves"]:        # each disk's exposure depends on its own vdev
+                leaf["vdev_type"], leaf["vdev_left"] = v["type"], max(0, v_left)
         types = sorted({v["type"] for v in data})
         level = types[0] if len(types) == 1 else "mixed" if types else "zfs"
 
@@ -139,7 +142,9 @@ def parse_status(text):
             status = "failed"
 
         pools.append({
-            "name": name, "state": state.lower(), "level": level, "role": "data", "zfs": True,
+            "name": name, "state": state.lower(), "level": level, "zfs": True,
+            # QNAP keeps its system files on a small mirror across every disk (zpoolExt*)
+            "role": "system" if re.match(r"zpoolExt", name, re.I) else "data",
             "status": status, "members": members, "vdevs": [{k: v[k] for k in ("name", "type", "state", "section")}
                                                              for v in vdevs],
             "size_bytes": None, "alloc_bytes": None, "slots": None, "active": None, "map": "",

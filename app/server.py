@@ -18,7 +18,7 @@ import raid
 import reliability
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 log = logging.getLogger("server")
 
 

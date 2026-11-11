@@ -166,7 +166,7 @@ async function renderDash() {
   view.querySelectorAll("[data-f]").forEach((b) => b.onclick = () => { dashFilter = b.dataset.f; renderDash(); });
 }
 let dashFilter = "all";
-const levelName = (l) => ({ raidz: "RAID 5 (RAIDZ1)", raidz1: "RAID 5 (RAIDZ1)", raidz2: "RAID 6 (RAIDZ2)", raidz3: "RAID-TP (RAIDZ3)", mirror: "RAID 1 (mirror)", stripe: "Single / RAID 0", mixed: "ZFS (mixed)" }[l] || (l || "").toUpperCase());
+const levelName = (l) => ({ raidz: "RAID 5 (RAIDZ1)", raidz1: "RAID 5 (RAIDZ1)", raidz2: "RAID 6 (RAIDZ2)", raidz3: "RAID-TP (RAIDZ3)", mirror: "RAID 1 (mirror)", stripe: "Single / RAID 0", mixed: "ZFS (tiered)", cache: "Cache", logs: "Log", spares: "Spare", special: "Special" }[l] || (l || "").toUpperCase());
 const ARRAY_ST = { healthy: "good", syncing: "info", rebuilding: "warning", degraded: "critical", failed: "failing" };
 function poolsSection(arr) {
   const data = arr.arrays.filter((a) => a.role === "data");
@@ -181,17 +181,21 @@ function poolsSection(arr) {
       return `<div class="pool ${cls}">
         <div class="row" style="gap:8px"><b class="mono" style="font-size:14px">${esc(a.name)}</b><span class="badge plain st-unknown">${esc(levelName(a.level))}</span>
           <span class="spacer"></span><span class="badge">${esc(a.status)}</span></div>
-        <div class="muted small">${a.zfs && !a.members.length ? `ZFS pool · state ${esc(a.state.toUpperCase())}` : `${fmtBytes(a.size_bytes)} · ${a.members.length} member${a.members.length > 1 ? "s" : ""} · ${left == null ? "" : left === 0 ? `<b style="color:var(--critical)">no redundancy left</b>` : `survives ${left} more disk failure${left > 1 ? "s" : ""}`}`}</div>
+        <div class="muted small">${a.zfs && !a.members.length ? `ZFS pool · state ${esc(a.state.toUpperCase())}` : `${fmtBytes(a.size_bytes)} · ${a.alloc_bytes ? `${Math.round(a.alloc_bytes / a.size_bytes * 100)}% used · ` : ""}${a.members.length} member${a.members.length > 1 ? "s" : ""} · ${left == null ? "" : left === 0 ? `<b style="color:var(--critical)">no redundancy left</b>` : `survives ${left} more disk failure${left > 1 ? "s" : ""}`}`}</div>
         ${a.sync_pct != null ? `<div class="row small" style="margin-top:2px"><span>${esc(a.sync)} ${a.sync_pct}%</span><span class="spacer"></span><span class="muted">${a.sync_eta_min ? `~${(a.sync_eta_min / 60).toFixed(1)} h left` : ""}</span></div><div class="progress"><div style="width:${a.sync_pct}%"></div></div>` : ""}
         ${a.zfs && !a.members.length ? `<div class="muted small">Add <code>pid: host</code> to the YAML to see this pool's disks, rebuild progress and ZFS error counts.</div>` : ""}
         ${a.zfs && a.errors && !/^No known/i.test(a.errors) ? `<div class="small" style="color:var(--critical)">${esc(a.errors)}</div>` : ""}
-        <div class="members">${a.members.map((m) => {
+        ${[...new Set(a.members.map((m) => m.vdev || ""))].map((vd) => {
+          const ms = a.members.filter((m) => (m.vdev || "") === vd);
+          const vt = ms[0].vdev_type || (ms[0].section !== "data" ? ms[0].section : "");
+          return `${vd && a.level === "mixed" || (vd && ms[0].section && ms[0].section !== "data") ? `<div class="muted small" style="margin-top:4px">${esc(levelName(vt))} · ${ms.length} disk${ms.length > 1 ? "s" : ""}${ms[0].vdev_left != null ? ` · survives ${ms[0].vdev_left} more failure${ms[0].vdev_left === 1 ? "" : "s"}` : ""}</div>` : ""}
+        <div class="members">${ms.map((m) => {
           const d = arr.drives[m.disk] || {};
           const mc = m.failed ? "st-failing" : `st-${d.state === "missing" ? "missing" : d.status || "unknown"}`;
           const ze = (m.read || 0) + (m.write || 0) + (m.cksum || 0);
           const inner = `<span class="dot"></span>${esc(m.disk)}${m.spare ? " (spare)" : ""}${m.section && m.section !== "data" && !m.spare ? ` (${esc(m.section)})` : ""}${m.failed ? " FAILED" : ""}${ze ? ` · ${ze} err` : ""}`;
           return d.serial ? `<a class="member ${mc}" href="#/drive/${encodeURIComponent(d.serial)}" title="${esc(d.model)}">${inner}</a>` : `<span class="member ${mc}">${inner}</span>`;
-        }).join("")}</div></div>`;
+        }).join("")}</div>`; }).join("")}</div>`;
     }).join("")}</div>`;
 }
 function fmtIn(ts) { const s = ts - Date.now() / 1000; if (s <= 60) return "soon"; if (s < 3600) return `in ${Math.round(s / 60)} min`; return `in ${Math.round(s / 3600)} h`; }
