@@ -12,19 +12,21 @@ _cache = {"key": None, "model": None}
 
 
 def load():
-    path = _USER if os.path.exists(_USER) else _BUILTIN
-    if not os.path.exists(path):
-        return None
-    key = (path, os.path.getmtime(path))
+    paths = [p for p in (_USER, _BUILTIN) if os.path.exists(p)]
+    key = tuple((p, os.path.getmtime(p)) for p in paths)
     if _cache["key"] != key:
-        try:
-            with open(path, encoding="utf-8") as f:
-                m = json.load(f)
-            if m.get("features") != features.FEATURES:
-                m = None   # incompatible with this version's feature set
-        except (OSError, ValueError):
-            m = None
-        _cache.update(key=key, model=m)
+        model = None
+        for path in paths:      # an imported model wins, unless it is unreadable or incompatible
+            try:
+                with open(path, encoding="utf-8") as f:
+                    m = json.load(f)
+            except (OSError, ValueError):
+                continue
+            if m.get("features") == features.FEATURES and len(m.get("weights", [])) == len(features.FEATURES):
+                m["_custom"] = path == _USER
+                model = m
+                break
+        _cache.update(key=key, model=model)
     return _cache["model"]
 
 
@@ -32,8 +34,9 @@ def info():
     m = load()
     if not m:
         return None
-    return {k: m.get(k) for k in ("trained_on", "trained_at", "auc", "positives", "negatives", "horizon_days")} | {
-        "custom": os.path.exists(_USER)}
+    keys = ("trained_on", "trained_at", "auc", "positives", "negatives", "horizon_days", "holdout",
+            "recall_at_1pct", "false_alarm_rate_at_1pct")
+    return {k: m.get(k) for k in keys} | {"custom": bool(m.get("_custom"))}
 
 
 def applicable(summary):

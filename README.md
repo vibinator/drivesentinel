@@ -24,8 +24,8 @@ Python dependencies beyond the standard library plus `smartmontools`.
     adjusted for age along the "bathtub curve" (infant mortality, useful life, wear-out).
   - **AI failure prediction**: a logistic-regression model trained on Backblaze's daily SMART
     records gives a calibrated *probability of failure within 30 days* for each hard drive, and
-    shows which factors drive the estimate. The built-in model was trained on 351k drives and
-    61M drive-days (Oct 2025 – Mar 2026), with a held-out AUC of 0.88.
+    shows which factors drive the estimate. The built-in model was trained on a year of data
+    (Oct 2025 – Sep 2026: 382k drives, 127M drive-days), with a held-out AUC of 0.88.
 - **One-click Backblaze update**: in Settings, *Update from Backblaze* downloads the latest
   quarters, recomputes failure rates per model and retrains the model on your NAS. You can also
   run it by hand: `python backblaze.py --quarters 2 --out /data`.

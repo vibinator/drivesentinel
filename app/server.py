@@ -10,18 +10,29 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
+import logging
+
 import alerts
 import ml
 import raid
 import reliability
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-VERSION = "1.2.0"
+VERSION = "1.3.0"
+log = logging.getLogger("server")
 
 
-def drive_card(d):
+def _int(value, default):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def drive_card(d, labels=None):
     s, a = d.get("summary") or {}, d.get("analysis") or {}
     return {
+        "label": (labels or {}).get(d["serial"]), "limited": a.get("limited", False),
         "serial": d["serial"], "model": d["model"], "family": s.get("family"),
         "device": d["device"], "protocol": d["protocol"], "state": d["state"],
         "capacity": s.get("capacity"), "is_ssd": s.get("is_ssd"),
@@ -95,7 +106,29 @@ def make_handler(app):
                 self._send(200, f.read(), mimetypes.guess_type(full)[0] or "application/octet-stream")
 
         # ---- routing ---------------------------------------------------
+        def _guard(self, fn):
+            try:
+                fn()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            except Exception as e:  # noqa: BLE001 - never drop the connection without a reply
+                log.exception("request failed: %s %s", self.command, self.path)
+                try:
+                    self._send(500, {"error": f"Internal error: {e}"})
+                except OSError:
+                    pass
+
         def do_GET(self):
+            self._guard(self._get)
+
+        def do_POST(self):
+            # Browsers can't send application/json cross-site without a CORS preflight (which
+            # is never granted here), so this blocks other websites from driving the API.
+            if not self.headers.get("Content-Type", "").lower().startswith("application/json"):
+                return self._send(415, {"error": "Content-Type must be application/json"})
+            self._guard(self._post)
+
+        def _get(self):
             if not self._authorized():
                 return
             url = urlparse(self.path)
@@ -139,7 +172,8 @@ def make_handler(app):
                                   for d in db.list_drives()]
                 return self._send(200, diag)
             if p == "/api/drives":
-                return self._send(200, [drive_card(d) for d in db.list_drives()])
+                labels = db.kv_get("labels", {})
+                return self._send(200, [drive_card(d, labels) for d in db.list_drives()])
             m = re.fullmatch(r"/api/drives/([^/]+)(/history|/raw)?", p)
             if m:
                 serial = unquote(m.group(1))
@@ -149,18 +183,18 @@ def make_handler(app):
                 if m.group(2) == "/raw":
                     return self._send(200, d.get("raw") or {})
                 if m.group(2) == "/history":
-                    days = max(1, min(3650, int(q.get("days", 30))))
+                    days = max(1, min(3650, _int(q.get("days"), 30)))
                     return self._send(200, _history_payload(db.history(serial, int(time.time()) - days * 86400)))
                 import bench
                 benches = db.benchmarks(serial, 100)
-                return self._send(200, {"card": drive_card(d), "summary": d["summary"],
+                return self._send(200, {"card": drive_card(d, db.kv_get("labels", {})), "summary": d["summary"],
                                         "analysis": d["analysis"], "first_seen": d["first_seen"],
                                         "events": db.events(50, serial),
                                         "peers": mon.peer_reports.get(serial),
                                         "benchmarks": benches, "bench_eval": bench.evaluate(benches),
                                         "benching": mon.benching == serial})
             if p == "/api/events":
-                return self._send(200, db.events(int(q.get("limit", 300)), q.get("serial")))
+                return self._send(200, db.events(max(1, min(5000, _int(q.get("limit"), 300))), q.get("serial")))
             if p == "/api/settings":
                 return self._send(200, cfg.public())
             if p == "/metrics":
@@ -171,19 +205,32 @@ def make_handler(app):
                 return self._send(404, {"error": "not found"})
             return self._static(p)
 
-        def do_POST(self):
+        def _post(self):
             if not self._authorized():
                 return
             p = urlparse(self.path).path
             body = self._json_body()
+            if not isinstance(body, dict):
+                body = {}
             if p == "/api/scan":
                 if mon.scanning:
                     return self._send(409, {"error": "Scan already in progress"})
                 threading.Thread(target=mon.scan, daemon=True).start()
                 return self._send(202, {"ok": True})
-            m = re.fullmatch(r"/api/drives/([^/]+)/(selftest|forget|benchmark)", p)
+            m = re.fullmatch(r"/api/drives/([^/]+)/(selftest|forget|benchmark|label)", p)
             if m:
                 serial = unquote(m.group(1))
+                if m.group(2) == "label":
+                    if not db.get_drive(serial):
+                        return self._send(404, {"error": "unknown drive"})
+                    labels = db.kv_get("labels", {})
+                    text = str(body.get("label") or "").strip()[:60]
+                    if text:
+                        labels[serial] = text
+                    else:
+                        labels.pop(serial, None)
+                    db.kv_set("labels", labels)
+                    return self._send(200, {"ok": True, "label": text})
                 if m.group(2) == "benchmark":
                     if mon.benching:
                         return self._send(409, {"error": "A benchmark is already running"})
@@ -269,7 +316,9 @@ def _prometheus(db):
     codes = {"good": 0, "warning": 1, "critical": 2, "failing": 3}
     for d in db.list_drives():
         s, a = d.get("summary") or {}, d.get("analysis") or {}
-        lbl = 'serial="%s",model="%s",device="%s"' % (d["serial"], (d["model"] or "").replace('"', ""), d["device"])
+        lbl = 'serial="%s",model="%s",device="%s"' % tuple(
+            str(v or "").replace("\\", "").replace('"', "").replace("\n", " ")
+            for v in (d["serial"], d["model"], d["device"]))
         for name, val in (("health_percent", a.get("health")), ("failure_risk_percent", a.get("risk")),
                           ("temperature_celsius", s.get("temperature")),
                           ("power_on_hours", s.get("power_on_hours")),

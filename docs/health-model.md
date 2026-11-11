@@ -44,6 +44,11 @@ low 16 bits.
 Other ATA signals:
 - **Attribute at or below its threshold:** p = 0.9, and the drive is *failing*.
 - **Attribute crossed its threshold in the past** (worst ≤ thresh): p = 0.25.
+- **Temperature attributes (190, 194) are excluded from both rules.** They "fail" when a drive
+  overheats, which is a cooling problem. Past overheating is listed as an info finding
+  (p = 0.01), and current temperature is handled in section 4.
+- **Limited data:** a device that reports no attributes and no health status gets an info
+  finding and a "Limited data" badge, because a clean score would be misleading.
 - **UDMA CRC errors (199):** p = 0.02, info. These usually point to a cable or backplane, not
   the disk.
 - **SATA SSD endurance** (attributes 231/233/202/177/169, normalized value as % remaining):
@@ -77,7 +82,7 @@ log scale (0.15, 0.06, cap 0.6).
 
 `reliability.lookup()` finds the drive's historical **annualized failure rate (AFR)**:
 
-1. Exact model match: Backblaze-computed stats (43 models, 351k drives, Oct 2025 – Mar 2026)
+1. Exact model match: Backblaze-computed stats (50 models, 382k drives, Oct 2025 – Sep 2026)
    or your overrides.
 2. Product-family match: curated estimates (WD Red, IronWolf, N300, Exos, BarraCuda,
    white-label WD, and so on).
@@ -114,7 +119,10 @@ show a misleading 0%.
   days, because those drives might still fail just after the data ends. Features are
   standardized, then fitted with Newton-Raphson (IRLS) and L2 regularization. The intercept is
   then corrected for the subsampling (`+ ln(0.004)`), so outputs are **calibrated probabilities**.
-- **Built-in model:** 47k positive and 203k negative samples, **AUC 0.88** on a 20% hold-out.
+- **Evaluation:** 20% of *drives* are held out (never rows, since one drive's daily records
+  are near-duplicates). The model file records the AUC, and at the 1% warning threshold the
+  share of soon-to-fail drive-days it catches and the share of healthy drive-days it flags.
+  Settings → AI & datasets shows these figures for the model in use.
 - **Scope:** SATA/ATA hard drives only. SSDs and NVMe drives use the indicators above.
 - **Effect on risk:** a 30-day probability ≥10% adds a critical finding; ≥1% adds a warning.
   The 12-month equivalent, `1 − (1 − p)^(365/30)`, is used as the contribution.
@@ -128,16 +136,35 @@ failure. Age is therefore mostly handled by the bathtub factor in section 5.
 
 These use up to 30 days of stored snapshots, needing at least 3 points spanning at least 1 day.
 
-- **Threshold projection:** for every attribute with a threshold, a linear regression of its
-  normalized value. If it's falling faster than 0.02 per day, the app projects the days until
-  it reaches the threshold (shown if under 3 years; critical if under 90 days).
+- **Threshold projection:** a linear regression of the normalized value, for attributes that
+  decline steadily as a drive degrades (5, 10, 184, 187, 196, 197, 198 and the SSD wear and
+  spare attributes). It needs at least 3 days of history, a fall faster than 0.02 per day and a
+  consistent trend (r² ≥ 0.5). It then projects the days until the threshold (shown if under
+  3 years; critical if under 90 days). Noisy attributes such as read/seek error rates and
+  temperatures are never extrapolated.
 - **Counter growth:** a regression of the raw values of attributes 5, 197, 198 and 187. Growth
   above 0.05 per day is reported per day and per month.
-- **Wear projection:** NVMe percentage used, or SATA SSD life attributes, trending toward
-  100% used.
+- **Wear projection:** NVMe percentage used, or SATA SSD life attributes. Wear counters move
+  in whole 1% steps, so the rate is the drive's lifetime average (wear ÷ age). The recent
+  trend is used as well once it spans 14 days, and the faster of the two wins.
 - **Actively deteriorating:** any growth over the last 7 days in reallocated, pending or
   uncorrectable sectors, NVMe media errors or SAS grown defects. This is a critical finding
   with p = 0.2.
+
+## 7b. Workload and mechanical wear
+
+`analyzer._usage()` reports, where the drive exposes them:
+
+- **Data written / read:** attributes 241/242 (units taken from the attribute name: LBAs,
+  GiB or 32 MiB) or the NVMe data-unit counters.
+- **Workload:** (written + read) ÷ age, in TB/year, compared with the rating for the drive's
+  class: desktop 55, NAS 180, NAS Pro 300, enterprise 550. More than 120% of the rating is a
+  warning (p = 0.03).
+- **Head load cycles** (attribute 193) against the class rating (desktop 300,000; others
+  600,000). Above the rating is a warning (p = 0.05). If the current rate would reach the
+  rating within 2 years, an info finding suggests disabling aggressive head parking.
+
+The drive class comes from the `class` field of the matching family in `model_stats.json`.
 
 ## 8. Performance benchmarks
 
@@ -151,6 +178,8 @@ distort results.
   sequential average divided by the baseline.
 - A drop of 25% or more is a warning (p = 0.08); 45% or more is critical (p = 0.25). Random
   latency above 2.5× the baseline is a warning.
+- A scheduled or manual run that comes in more than 25% below the baseline is repeated after
+  45 seconds and the better result is kept, since a busy NAS is the usual cause.
 
 ## 9. Storage pools (RAID)
 

@@ -3,6 +3,10 @@
 The base URL is `http://<NAS-IP>:8090`. All bodies are JSON. If `AUTH_USER` is set, every
 request needs HTTP basic auth.
 
+Every `POST` must send `Content-Type: application/json` (an empty `{}` body is fine), or it
+is rejected with `415`. This stops other websites from driving the API through your browser.
+Unexpected server errors return `500 {"error": "..."}`.
+
 ## Status and diagnostics
 
 ### `GET /api/status`
@@ -73,6 +77,10 @@ Body: `{"type": "short" | "long" | "conveyance" | "abort"}`. Returns `{"ok": tru
 ### `POST /api/drives/{serial}/benchmark`
 Starts a read-only benchmark in the background. Returns `202 {"ok": true, "message": "..."}`,
 or `409` if one is already running.
+
+### `POST /api/drives/{serial}/label`
+Body: `{"label": "Bay 3"}` (up to 60 characters; empty clears it). The label appears on the
+drive's card.
 
 ### `POST /api/drives/{serial}/forget`
 Deletes the drive, its snapshots and its benchmarks.

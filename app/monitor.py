@@ -1,6 +1,7 @@
 """Scan scheduler, history recording, event/alert generation and self-test scheduling."""
 import logging
 import os
+import re
 import shutil
 import threading
 import time
@@ -38,6 +39,8 @@ class Monitor:
         self._scan_lock = threading.Lock()
         self._wake = threading.Event()
         self._temp_alerted = {}
+        self._pushed = {}
+        self._bench_batch_active = False
         self.last_scan = db.kv_get("last_scan", 0)
         self.last_scan_duration = 0
         self.last_errors = []
@@ -51,9 +54,19 @@ class Monitor:
         self.bb_job = {"state": "idle"}
 
     # ------------------------------------------------------------------
-    def notify(self, level, title, message, serial=None, ts=None):
+    def notify(self, level, title, message, serial=None, ts=None, cooldown_key=None, cooldown_h=12):
+        """Record an event and push it to the configured channels.
+
+        cooldown_key: repeat alerts with the same key are still logged as events, but pushed
+        at most once per cooldown_h hours (stops hourly spam while a counter keeps growing).
+        """
         self.db.add_event(level, title, message, serial, ts)
         log.info("[%s] %s - %s", level, title, message)
+        if cooldown_key and ts is None:
+            last = self._pushed.get(cooldown_key, 0)
+            if time.time() - last < cooldown_h * 3600:
+                return
+            self._pushed[cooldown_key] = time.time()
         if ts is None and LEVEL_RANK.get(level, 0) >= LEVEL_RANK.get(self.cfg["alert_min_level"], 1):
             threading.Thread(target=alerts.send, args=(self.cfg, level, title, message,
                                                        {"serial": serial}), daemon=True).start()
@@ -123,7 +136,7 @@ class Monitor:
         summary["perf"] = bench.evaluate(self.db.benchmarks(serial))
         metrics = smart.metrics_from(summary)
         history = self.db.history(serial, ts - 30 * 86400) + [(ts, metrics)]
-        result = analyzer.analyze(summary, history, self.cfg)
+        result = analyzer.analyze(summary, history, self.cfg, now=ts if quiet else None)
         metrics["health"], metrics["risk"] = result["health"], result["risk"]
         self.db.add_snapshot(serial, ts, metrics)
         self.db.upsert_drive(serial, summary, result, raw, ts)
@@ -159,9 +172,11 @@ class Monitor:
                 except (KeyError, TypeError, IndexError):
                     continue
                 if after > before:
-                    self.notify("critical" if aid in ("197", "198", "187") or after - before >= 10 else "warning",
+                    big = after - before >= 10
+                    self.notify("critical" if aid in ("197", "198", "187") or big else "warning",
                                 f"{label} increased on {summary['model']}",
-                                f"{name}: {label} {before} → {after}", serial, ev_ts)
+                                f"{name}: {label} {before} → {after}", serial, ev_ts,
+                                cooldown_key=None if big else f"{serial}:{aid}")
             for key, label in (("media_errors", "NVMe media errors"), ("critical_warning", "NVMe critical warning")):
                 b, a = (pm.get("nvme") or {}).get(key), (metrics.get("nvme") or {}).get(key)
                 if b is not None and a is not None and a > b:
@@ -200,6 +215,8 @@ class Monitor:
     # ------------------------------------------------------------------ RAID
     def _check_raid(self, ts, quiet):
         prev = self.db.kv_get("raid_state", {})
+        if prev and not self.arrays:
+            return   # pool sources unreadable this scan; don't report every pool as gone
         cur = {}
         ev_ts = ts if quiet else None
         for a in self.arrays:
@@ -269,6 +286,14 @@ class Monitor:
                 res = self.backend.run_benchmark(d["device"], now=now)
             else:
                 res = bench.run(d["device"], seq_mb=self.cfg["bench_seq_mb"])
+                # A slow result is often just the NAS being busy: confirm with a second run
+                prior = bench.evaluate(self.db.benchmarks(serial))
+                if prior and res.get("seq_avg") and res["seq_avg"] < prior["baseline_seq"] * 0.75:
+                    time.sleep(45)
+                    again = bench.run(d["device"], seq_mb=self.cfg["bench_seq_mb"])
+                    if (again.get("seq_avg") or 0) > res["seq_avg"]:
+                        res = again
+                    res["retried"] = True
             ts = int(now or time.time())
             self.db.add_benchmark(serial, ts, res)
             state = self.db.kv_get("bench_last", {})
@@ -294,7 +319,8 @@ class Monitor:
 
     def _due_benchmarks(self):
         interval = self.cfg["bench_interval_days"]
-        if interval <= 0 or raid.busy(self.arrays) or self.benching:
+        if interval <= 0 or raid.busy(self.arrays) or self.benching or self._bench_batch_active \
+                or not self.in_window():
             return []
         state = self.db.kv_get("bench_last", {})
         now, due, changed = time.time(), [], False
@@ -312,10 +338,13 @@ class Monitor:
         return due
 
     def _bench_batch(self, serials):
-        for s in serials:
-            if raid.busy(self.arrays):
-                break
-            self.run_benchmark(s)
+        try:
+            for s in serials:
+                if raid.busy(self.arrays):
+                    break
+                self.run_benchmark(s)
+        finally:
+            self._bench_batch_active = False
         self.trigger()
 
     # ------------------------------------------------------------------ Backblaze
@@ -373,6 +402,8 @@ class Monitor:
 
     # ------------------------------------------------------------------
     def run_selftest(self, serial, kind):
+        if kind not in ("short", "long", "conveyance", "abort"):
+            raise ValueError("invalid test type")
         d = self.db.get_drive(serial)
         if not d:
             return False, "Unknown drive"
@@ -382,33 +413,60 @@ class Monitor:
                               f"{d['device']} (S/N {serial})", serial)
         return ok, msg
 
+    def in_window(self, ts=None):
+        """True when inside the maintenance window (or when none is configured)."""
+        m = re.fullmatch(r"\s*(\d{1,2})(?::(\d{2}))?\s*-\s*(\d{1,2})(?::(\d{2}))?\s*",
+                         self.cfg["maintenance_window"] or "")
+        if not m:
+            return True
+        start = int(m.group(1)) % 24 * 60 + int(m.group(2) or 0)
+        end = int(m.group(3)) % 24 * 60 + int(m.group(4) or 0)
+        lt = time.localtime(ts or time.time())
+        cur = lt.tm_hour * 60 + lt.tm_min
+        if start == end:
+            return True
+        return start <= cur < end if start < end else (cur >= start or cur < end)
+
     def _check_selftests(self, ts):
+        """Start due self-tests. Extended tests run one drive at a time, inside the
+        maintenance window, so the whole array is never surface-scanned at once."""
         if self.mock and ts < time.time() - 60:
             return   # don't schedule tests while backfilling simulated history
         state = self.db.kv_get("selftest_schedule", {})
         changed = False
-        for kind, key in (("long", "long_test_interval_days"), ("short", "short_test_interval_days")):
-            interval = self.cfg[key]
-            if interval <= 0:
-                continue
-            for d in self.db.list_drives():
-                if d["state"] != "online":
-                    continue
-                if (d.get("summary") or {}).get("selftest", {}).get("running"):
+        drives = [d for d in self.db.list_drives() if d["state"] == "online"]
+
+        def testing(d):
+            return bool((d.get("summary") or {}).get("selftest", {}).get("running"))
+
+        long_slot_free = not any(testing(d) for d in drives)
+        for i, d in enumerate(drives):
+            for kind, key in (("long", "long_test_interval_days"), ("short", "short_test_interval_days")):
+                interval = self.cfg[key]
+                if interval <= 0:
                     continue
                 k = f"{d['serial']}:{kind}"
                 last = state.get(k)
                 if last is None:
-                    # stagger the first run instead of testing everything immediately
-                    state[k] = ts - interval * 86400 + 6 * 3600
+                    # first run: short tests ~6 h after discovery, extended tests one drive per day
+                    first_in = 6 * 3600 if kind == "short" else (i + 1) * 86400
+                    state[k] = ts - interval * 86400 + first_in
                     changed = True
                     continue
-                if ts - last >= interval * 86400:
-                    ok, _ = self.run_selftest(d["serial"], kind)
-                    state[k] = ts
-                    if kind == "long":
-                        state[f"{d['serial']}:short"] = ts   # a long test covers the short one
-                    changed = True
+                if ts - last < interval * 86400 or testing(d):
+                    continue
+                if kind == "long" and not (long_slot_free and self.in_window(ts)):
+                    continue
+                ok, _ = self.run_selftest(d["serial"], kind)
+                changed = True
+                if not ok:
+                    state[k] = ts - interval * 86400 + 86400     # try again tomorrow
+                    continue
+                state[k] = ts
+                if kind == "long":
+                    long_slot_free = False
+                    state[f"{d['serial']}:short"] = ts           # an extended test covers the short one
+                break
         if changed:
             self.db.kv_set("selftest_schedule", state)
 
@@ -419,14 +477,18 @@ class Monitor:
     def loop(self):
         last_prune = 0
         while True:
-            interval = max(5, self.cfg["scan_interval_min"]) * 60
-            if time.time() - self.last_scan >= interval or self._wake.is_set():
-                self._wake.clear()
-                self.scan()
-            due = self._due_benchmarks()
-            if due:
-                threading.Thread(target=self._bench_batch, args=(due,), daemon=True).start()
-            if time.time() - last_prune > 86400:
-                self.db.prune(self.cfg["retention_days"])
-                last_prune = time.time()
+            try:
+                interval = max(5, self.cfg["scan_interval_min"]) * 60
+                if time.time() - self.last_scan >= interval or self._wake.is_set():
+                    self._wake.clear()
+                    self.scan()
+                due = self._due_benchmarks()
+                if due:
+                    self._bench_batch_active = True
+                    threading.Thread(target=self._bench_batch, args=(due,), daemon=True).start()
+                if time.time() - last_prune > 86400:
+                    self.db.prune(self.cfg["retention_days"])
+                    last_prune = time.time()
+            except Exception:  # noqa: BLE001 - the scheduler must never die
+                log.exception("monitor loop error")
             self._wake.wait(30)

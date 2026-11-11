@@ -8,7 +8,7 @@ let currentRoute = "";
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 async function api(path, opts = {}) {
   const r = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts,
-    body: opts.body ? JSON.stringify(opts.body) : undefined });
+    body: opts.method === "POST" ? JSON.stringify(opts.body || {}) : undefined });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(data.error || data.message || `HTTP ${r.status}`);
   return data;
@@ -208,10 +208,11 @@ function card(d) {
       <div style="min-width:0;flex:1">
         <div class="row" style="gap:6px;flex-wrap:nowrap">${d.is_ssd ? ICONS.ssd : ICONS.hdd}<div class="card-title" title="${esc(d.model)}">${esc(d.model)}</div></div>
         <div class="card-sub">${esc(d.family || "")}${d.family ? " · " : ""}${fmtBytes(d.capacity)}</div>
-        <div class="card-sub mono">${esc(d.device)} · ${esc(d.serial)}</div>
+        <div class="card-sub mono">${d.label ? `<b style="font-family:inherit">${esc(d.label)}</b> · ` : ""}${esc(d.device)} · ${esc(d.serial)}</div>
       </div></div>
     <div class="pill-row"><span class="badge">${statusLabel(d)}</span>
       ${d.state === "standby" ? `<span class="badge st-unknown">Sleeping</span>` : ""}
+      ${d.limited ? `<span class="badge plain st-warning" title="This device reports no SMART attributes">Limited data</span>` : ""}
       ${d.selftest_running ? `<span class="badge st-info">Self-test ${d.selftest_remaining != null ? 100 - d.selftest_remaining + "%" : ""}</span>` : ""}
       ${d.ml_p != null && d.ml_p >= 0.01 ? `<span class="badge plain ${d.ml_p >= 0.1 ? "st-critical" : "st-warning"}" title="AI 30-day failure probability">AI ${(d.ml_p * 100).toFixed(1)}%</span>` : ""}
       ${d.known_issues ? `<span class="badge plain st-warning">Known issue</span>` : ""}
@@ -244,6 +245,7 @@ async function renderDrive(serial) {
     ["First seen", fmtDate(det.first_seen)], ["Last scanned", fmtAgo(c.last_seen)],
     ["Storage pool", (a.raid || []).filter((r) => r.role === "data").map((r) => `${r.array} (${(r.level || "").toUpperCase()}, ${r.status})`).join(", ") || "—"],
     ["Performance", det.bench_eval ? `${det.bench_eval.score}% of baseline` : "Not benchmarked yet"],
+    ...usageFacts(a.usage || {}),
   ];
   view.innerHTML = `
   <div class="stack">
@@ -256,6 +258,7 @@ async function renderDrive(serial) {
         <div style="flex:1;min-width:260px">
           <div class="muted small" style="font-weight:600;text-transform:uppercase;letter-spacing:.06em">${esc(driveType(s))}</div>
           <h1>${esc(s.model)}</h1>
+          <div class="row" style="gap:6px;margin:4px 0"><input id="labelIn" value="${esc(c.label || "")}" maxlength="60" placeholder="Add a label, e.g. Bay 3" style="padding:4px 9px;width:210px;font-size:13px"><button class="btn ghost" id="labelBtn" style="padding:4px 10px">Save label</button></div>
           <div class="muted">${esc(s.family || "")}</div>
           <div class="row" style="margin-top:10px;gap:6px"><span class="badge">${statusLabel(c)}</span> ${c.state !== "online" ? `<span class="badge st-unknown">${esc(c.state)}</span>` : ""}
             ${s.smart_passed === false ? `<span class="badge st-failing">SMART failed</span>` : s.smart_passed ? `<span class="badge st-good">SMART passed</span>` : ""}
@@ -330,6 +333,10 @@ async function renderDrive(serial) {
     try { const r = await api(`/api/drives/${encodeURIComponent(serial)}/selftest`, { method: "POST", body: { type: kind } }); toast(r.message || "Sent"); setTimeout(() => route(), 6000); }
     catch (e) { toast("Failed: " + e.message); }
   });
+  $("#labelBtn").onclick = async () => {
+    try { await api(`/api/drives/${encodeURIComponent(serial)}/label`, { method: "POST", body: { label: $("#labelIn").value } }); toast("Label saved"); }
+    catch (e) { toast(e.message); }
+  };
   const bb = $("#benchBtn");
   if (bb) bb.onclick = async () => {
     try { const r = await api(`/api/drives/${encodeURIComponent(serial)}/benchmark`, { method: "POST" }); toast(r.message); bb.disabled = true; bb.textContent = "Running…";
@@ -399,6 +406,14 @@ function drawPerfChart(rows) {
   lineChart(el, rows.map((r) => r.ts), [0, 1, 2].map((i) => ({ name: ["Outer", "Middle", "Inner"][i], color: css(["--c1", "--c2", "--c4"][i]), data: rows.map((r) => (r.seq_mbps || [])[i] ?? null) })), { unit: "", floor: 0 });
 }
 
+function usageFacts(u) {
+  const out = [];
+  if (u.tb_written != null) out.push(["Data written", `${fmtNum(u.tb_written)} TB${u.tb_read != null ? ` (read ${fmtNum(u.tb_read)} TB)` : ""}`]);
+  if (u.tb_per_year != null) out.push(["Workload", `${fmtNum(u.tb_per_year)} TB/year${u.workload_rating ? ` (rated ${u.workload_rating}, ${u.drive_class})` : ""}`]);
+  if (u.load_cycles != null) out.push(["Head load cycles", `${fmtNum(u.load_cycles)} of ${fmtNum(u.load_rating)}${u.load_per_hour != null ? ` · ${u.load_per_hour}/h` : ""}`]);
+  return out;
+}
+
 function reliabilityPanel(r) {
   if (!r) return "";
   const max = Math.max(4, r.adjusted_afr * 1.25, r.fleet_average * 1.5);
@@ -461,7 +476,8 @@ const SETTINGS = [
     ["scan_interval_min", "Scan interval (minutes)", "number", "How often SMART data is collected."],
     ["devices", "Devices", "text", "Leave empty to auto-detect. Or list devices, e.g. /dev/sda:sat,/dev/nvme0"],
     ["skip_standby", "Don't wake sleeping disks", "check", "Skips disks in standby so they can spin down."],
-    ["retention_days", "History retention (days)", "number", ""],
+    ["retention_days", "History retention (days)", "number", "After 30 days, history is thinned to one reading per 6 hours."],
+    ["maintenance_window", "Maintenance window", "text", "When scheduled extended self-tests and benchmarks may start, e.g. 01:00-06:00. Empty = any time."],
   ]],
   ["Thresholds", [
     ["hdd_temp_warn", "HDD temperature warning (°C)", "number", ""], ["hdd_temp_crit", "HDD temperature critical (°C)", "number", ""],
@@ -539,7 +555,9 @@ async function drawBB() {
     <div class="chart-card"><b>AI model</b><div class="kv small" style="margin-top:8px">
       <span class="k">Trained on</span><span class="v">${esc(m?.trained_on || "—")}</span>
       <span class="k">Accuracy (AUC)</span><span class="v">${m?.auc ?? "—"}</span>
-      <span class="k">Failure samples</span><span class="v">${fmtNum(m?.positives)}</span></div></div></div>
+      <span class="k">Failure samples</span><span class="v">${fmtNum(m?.positives)}</span>
+      ${m?.recall_at_1pct != null ? `<span class="k">Failing drives flagged in time</span><span class="v">${Math.round(m.recall_at_1pct * 100)}%</span>
+      <span class="k">Healthy drives flagged by mistake</span><span class="v">${(m.false_alarm_rate_at_1pct * 100).toFixed(2)}%</span>` : ""}</div></div></div>
     <div class="row" style="margin-top:14px">
       <button class="btn primary" type="button" id="bbBtn" ${running ? "disabled" : ""}>Update from Backblaze</button>
       <span class="small muted">Downloads the latest public Drive Stats, recomputes failure rates per model and retrains the AI model. This runs on your NAS: allow 10–60 min per quarter and keep 1–2 GB of free space in /data.</span></div>

@@ -69,9 +69,10 @@ def lookup(summary):
         key = "nvme" if summary.get("protocol") == "NVMe" else "ssd" if summary.get("is_ssd") else "hdd"
         match, kind = dict(data["defaults"][key], name=f"Generic {key.upper()}"), "default"
 
-    years = (summary.get("power_on_hours") or 0) / 8766
-    mult, phase = 1.0, ""
-    for band in data["age_multipliers"]:
+    poh = summary.get("power_on_hours")
+    years = (poh or 0) / 8766
+    mult, phase = 1.0, "age unknown"
+    for band in (data["age_multipliers"] if poh is not None else ()):
         if years < band["max_years"]:
             mult, phase = band["mult"], band.get("note", "")
             break
@@ -103,3 +104,25 @@ def _safe_search(pattern, text):
         return re.search(pattern, text, re.I) is not None
     except re.error:
         return False
+
+
+CLASSES = {
+    "desktop":    {"name": "desktop", "workload_tb_yr": 55, "load_cycles": 300000},
+    "nas":        {"name": "NAS", "workload_tb_yr": 180, "load_cycles": 600000},
+    "nas_pro":    {"name": "NAS Pro", "workload_tb_yr": 300, "load_cycles": 600000},
+    "enterprise": {"name": "enterprise", "workload_tb_yr": 550, "load_cycles": 600000},
+    "ssd":        {"name": "SSD", "workload_tb_yr": None, "load_cycles": 600000},
+}
+
+
+def drive_class(summary):
+    """Workload / load-cycle ratings for the drive's class (from the family table)."""
+    if summary.get("is_ssd"):
+        return CLASSES["ssd"]
+    model = re.sub(r"\s+", " ", summary.get("model") or "").strip()
+    family = summary.get("family") or ""
+    for entry in _load()["families"]:
+        if entry.get("class") and (_safe_search(entry["match"], model)
+                                   or (family and _safe_search(entry["match"], family))):
+            return CLASSES.get(entry["class"], CLASSES["nas"])
+    return CLASSES["nas"]

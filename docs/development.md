@@ -74,16 +74,23 @@ then check it matches:
 cd app && python -c "import issues; print(issues.lookup({'model': 'Samsung SSD 980 PRO 2TB', 'firmware': '3B2QGXA7'}))"
 ```
 
-## Testing checklist
+## Testing
 
-There's no test framework; checks are done by hand:
+```sh
+python -m unittest discover -s tests        # ~10 seconds, standard library only
+```
 
-1. `python -m py_compile app/*.py` and `node -e "new Function(require('fs').readFileSync('app/static/app.js','utf8'))"`
-2. Start in mock mode and confirm `GET /api/status` has no `errors` and the log has no tracebacks.
-3. In the UI, check the dashboard, a drive page, Events and Settings, in both themes and at phone width.
-4. Repeat with `MOCK_RAID=degraded` to check the pool alerts and the hero headline.
-5. For parser changes, feed `raid.parse()` or `smart.normalize()` captured real output
-   (see `/api/diagnostics` and `/api/drives/{serial}/raw` on a live install).
+`tests/test_all.py` covers SMART normalization, the scoring rules, reliability and
+known-issue matching, the AI model, the RAID and ZFS parsers, benchmark evaluation, the
+schedulers, and the whole app end to end over HTTP in demo mode. GitHub Actions runs it before
+every image build, and a failing test blocks the build.
+
+When you fix a bug, add a test that fails without the fix. For parser changes, feed
+`raid.parse()` or `smart.normalize()` captured real output (see `/api/diagnostics` and
+`/api/drives/{serial}/raw` on a live install).
+
+Still checked by hand: the UI (dashboard, a drive page, Events and Settings, in both themes
+and at phone width), and `MOCK_RAID=degraded` for the pool alerts.
 
 ## Releasing
 
@@ -94,6 +101,14 @@ There's no test framework; checks are done by hand:
 4. On the NAS, recreate the Container Station application to pull the new image.
 
 ## Changelog
+
+- **1.3.0:** Extended self-tests now run one drive at a time (they used to start on every
+  drive at once) and respect a new maintenance window. Fixed false failure predictions from
+  noisy attributes, from 1% SSD wear steps and from past overheating. Benchmarks confirm a
+  slow result before alerting. Repeat counter alerts are rate-limited. The API rejects
+  cross-site POSTs. Added workload and head-load-cycle tracking, drive labels, a "limited
+  data" flag, history thinning, more drive families, a test suite, and a built-in dataset
+  and model built from four quarters of Backblaze data.
 
 - **1.2.0:** SATA disks that QNAP reports as SCSI are now read with SAT passthrough, giving full
   SMART attributes. Added ZFS pool health (QuTS hero), the `/api/diagnostics` endpoint, a WD

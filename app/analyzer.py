@@ -32,6 +32,10 @@ ATA_COUNTERS = {
 CABLE_ATTR = 199          # UDMA CRC errors: usually cabling/backplane, not the disk
 SSD_LIFE_ATTRS = (231, 233, 202, 177, 169)   # normalized value ~= % life remaining
 TREND_ATTRS = (5, 197, 198, 187)
+TEMP_ATTRS = (190, 194)
+# Attributes whose normalized value falls steadily as the drive degrades. Others (read/seek
+# error rates, temperatures, ECC counts) fluctuate too much to extrapolate.
+PROJECTABLE = {5, 10, 184, 187, 196, 197, 198, 169, 170, 171, 172, 173, 177, 180, 202, 231, 232, 233}
 
 LEVEL_RANK = {"info": 0, "warning": 1, "critical": 2}
 STATUS_RANK = {"good": 0, "warning": 1, "critical": 2, "failing": 3, "unknown": -1}
@@ -41,22 +45,31 @@ def _log_scale(count, base, step, cap):
     return min(cap, base + step * math.log2(1 + count))
 
 
-def _regress(points):
-    """Least squares slope (per day) for [(ts, value)]; None if insufficient data."""
+def _fit(points, min_span=1.0):
+    """Least-squares fit of [(ts, value)] -> (slope per day, r squared, span in days), or None."""
     pts = [(t, v) for t, v in points if v is not None]
     if len(pts) < 3:
         return None
     t0 = pts[0][0]
     xs = [(t - t0) / 86400.0 for t, _ in pts]
-    if xs[-1] - xs[0] < 1.0:   # need at least one day of history
+    span = xs[-1] - xs[0]
+    if span < min_span:
         return None
     ys = [float(v) for _, v in pts]
     n = len(xs)
     mx, my = sum(xs) / n, sum(ys) / n
-    den = sum((x - mx) ** 2 for x in xs)
-    if den == 0:
+    sxx = sum((x - mx) ** 2 for x in xs)
+    syy = sum((y - my) ** 2 for y in ys)
+    if sxx == 0:
         return None
-    return sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / den
+    sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    r2 = (sxy * sxy) / (sxx * syy) if syy > 0 else 0.0
+    return sxy / sxx, r2, span
+
+
+def _regress(points, min_span=1.0):
+    fit = _fit(points, min_span)
+    return fit[0] if fit else None
 
 
 def _hist_series(history, getter):
@@ -79,11 +92,11 @@ def _fmt_days(days):
     return f"~{days / 365:.1f} years"
 
 
-def analyze(summary, history, cfg):
+def analyze(summary, history, cfg, now=None):
     """summary: normalized data; history: [(ts, metrics)] oldest->newest incl. current."""
     factors = []      # (probability, level, text)
     predictions = []  # {"text", "days", "level"}
-    now = time.time()
+    now = now or time.time()
 
     def add(p, level, text):
         factors.append((max(0.0, min(0.99, p)), level, text))
@@ -98,6 +111,12 @@ def analyze(summary, history, cfg):
     # ---- ATA attributes -------------------------------------------------
     for a in attrs.values():
         thresh, value, worst = a.get("thresh") or 0, a.get("value"), a.get("worst")
+        if a["id"] in TEMP_ATTRS:
+            # Temperature attributes "fail" when the drive overheats; that is a cooling
+            # problem (reported separately), not a sign that the drive itself is dying.
+            if thresh > 0 and worst is not None and worst <= thresh and not (value is not None and value <= thresh):
+                add(0.01, "info", f"Overheated at some point in the past ({a['name']} reached its limit)")
+            continue
         if thresh > 0 and value is not None and value <= thresh:
             failing_now = True
             add(0.9, "critical", f"{a['name']} (ID {a['id']}) is at/below its failure threshold "
@@ -184,8 +203,27 @@ def analyze(summary, history, cfg):
         elif temp >= warn:
             add(0.02, "warning", f"Temperature high: {temp}°C (warn {warn}°C)")
 
+    # Drives that expose almost nothing (e.g. SATA disks only reachable as generic SCSI)
+    limited = (not attrs and not nv and summary.get("smart_passed") is None)
+    if limited:
+        add(0.0, "info", "Limited SMART data: this device reports no health attributes, so its "
+                         "health can't be assessed properly (see Troubleshooting in the docs)")
+
     # Make/model baseline (historical fleet failure rate) adjusted for age (bathtub curve)
     rel = reliability.lookup(summary)
+    usage = _usage(summary, attrs, nv)
+    if usage.get("load_cycles"):
+        lc, rated = usage["load_cycles"], usage["load_rating"]
+        if lc >= rated:
+            add(0.05, "warning", f"Head load/unload cycles ({lc:,}) exceed the {rated:,} rating")
+        elif usage.get("load_years_left") is not None and usage["load_years_left"] < 2:
+            add(0.01, "info", f"Heads park very often ({usage['load_per_hour']:.0f}/hour): the {rated:,}-cycle "
+                              f"rating will be reached in ~{usage['load_years_left']:.1f} years. "
+                              "Consider disabling aggressive idle/APM for this drive.")
+    if usage.get("tb_per_year") and usage.get("workload_rating") and \
+            usage["tb_per_year"] > usage["workload_rating"] * 1.2:
+        add(0.03, "warning", f"Workload ~{usage['tb_per_year']:.0f} TB/year exceeds this drive class's "
+                             f"{usage['workload_rating']} TB/year rating ({usage['drive_class']})")
     base_p = rel["adjusted_afr"] / 100
     rel_text = (f"{rel['matched']}: {rel['afr']}% historical annual failure rate ({rel['source']})"
                 + (f", x{rel['age_multiplier']} for age {rel['age_years']}y ({rel['age_phase']})"
@@ -265,10 +303,12 @@ def analyze(summary, history, cfg):
     # Normalized ATA values trending toward their thresholds
     for aid, a in attrs.items():
         thresh = a.get("thresh") or 0
-        if thresh <= 0 or a["value"] is None or a["value"] <= thresh:
+        if aid not in PROJECTABLE or thresh <= 0 or a["value"] is None or a["value"] <= thresh:
             continue
-        slope = _regress(_hist_series(month, lambda m, k=str(aid): m["attrs"][k][0]))
-        if slope is not None and slope < -0.02:
+        # needs >=3 days of history and a consistent decline (noisy attributes are excluded)
+        fit = _fit(_hist_series(month, lambda m, k=str(aid): m["attrs"][k][0]), min_span=3.0)
+        if fit and fit[0] < -0.02 and fit[1] >= 0.5:
+            slope = fit[0]
             days = (a["value"] - thresh) / -slope
             if days < 3 * 365:
                 predictions.append({
@@ -288,21 +328,29 @@ def analyze(summary, history, cfg):
                                         f"(~{slope * 30:.0f}/month)"})
 
     # SSD wear projections
+    # Wear counters move in whole 1% steps, so a short window badly overestimates the rate.
+    # Use the lifetime average, and the recent trend only once it spans two weeks.
+    poh = summary.get("power_on_hours") or 0
+    used, recent = None, None
     if nv and nv.get("percentage_used") is not None:
-        slope = _regress(_hist_series(month, lambda m: m["nvme"]["percentage_used"]))
-        if slope and slope > 0 and nv["percentage_used"] < 100:
-            days = (100 - nv["percentage_used"]) / slope
-            predictions.append({"days": days, "level": "warning" if days < 365 else "info",
-                                "text": f"Rated endurance projected to be reached in {_fmt_days(days)}"})
+        used = nv["percentage_used"]
+        recent = _regress(_hist_series(month, lambda m: m["nvme"]["percentage_used"]), min_span=14.0)
     elif life_left is not None:
+        used = 100 - life_left
         for aid in SSD_LIFE_ATTRS:
             if aid in attrs:
-                slope = _regress(_hist_series(month, lambda m, k=str(aid): m["attrs"][k][0]))
-                if slope and slope < 0:
-                    days = life_left / -slope
-                    predictions.append({"days": days, "level": "warning" if days < 365 else "info",
-                                        "text": f"SSD endurance projected to run out in {_fmt_days(days)}"})
+                r = _regress(_hist_series(month, lambda m, k=str(aid): m["attrs"][k][0]), min_span=14.0)
+                recent = -r if r is not None else None
                 break
+    if used is not None and 0 < used < 100:
+        lifetime = used / (poh / 24.0) if poh >= 24 * 30 else None
+        rates = [r for r in (lifetime, recent) if r and r > 0]
+        if rates:
+            days = (100 - used) / max(rates)
+            basis = "recent" if recent and recent == max(rates) else "lifetime average"
+            predictions.append({"days": days, "level": "warning" if days < 365 else "info",
+                                "text": f"Rated endurance projected to be reached in {_fmt_days(days)} "
+                                        f"at the {basis} write rate"})
 
     # ---- Combine ---------------------------------------------------------
     survive = 1.0
@@ -343,6 +391,8 @@ def analyze(summary, history, cfg):
         "eta_days": eta,
         "life_left": life_left,
         "reliability": rel,
+        "usage": usage,
+        "limited": limited,
         "ml": pred,
         "known_issues": known,
         "perf": {k: perf[k] for k in ("score", "baseline_seq", "runs", "latest")} if perf else None,
@@ -363,3 +413,46 @@ def _verdict(status, eta, issues):
     if issues:
         return "Healthy. Minor observations noted."
     return "Healthy. No warning signs detected."
+
+
+def _usage(summary, attrs, nv):
+    """Workload and mechanical wear: data written/read, head load cycles."""
+    out = {}
+    poh = summary.get("power_on_hours") or 0
+    years = poh / 8766.0
+    block = summary.get("logical_block_size") or 512
+
+    def volume(aid):
+        a = attrs.get(aid)
+        if not a or a["raw"] <= 0:
+            return None
+        name = a["name"].lower()
+        if "32mib" in name:
+            return a["raw"] * 32 * 1024 ** 2
+        if "gib" in name or "_gb" in name:
+            return a["raw"] * 1024 ** 3
+        if "lba" in name:
+            return a["raw"] * block
+        return None
+
+    written = nv["data_units_written"] * 512000 if nv and nv.get("data_units_written") else volume(241)
+    read = nv["data_units_read"] * 512000 if nv and nv.get("data_units_read") else volume(242)
+    if written:
+        out["tb_written"] = round(written / 1e12, 2)
+    if read:
+        out["tb_read"] = round(read / 1e12, 2)
+    if (written or read) and years >= 0.1:
+        out["tb_per_year"] = round(((written or 0) + (read or 0)) / 1e12 / years, 1)
+    spec = reliability.drive_class(summary)
+    out["drive_class"], out["workload_rating"] = spec["name"], spec["workload_tb_yr"]
+
+    lc = attrs.get(193)
+    if lc and lc["raw"] > 0 and not summary.get("is_ssd"):
+        cycles = lc["raw"] & 0xFFFFFF if lc["raw"] > 0xFFFFFF else lc["raw"]
+        out["load_cycles"], out["load_rating"] = cycles, spec["load_cycles"]
+        if poh >= 24 * 30:
+            rate = cycles / poh
+            out["load_per_hour"] = round(rate, 1)
+            if rate > 0 and cycles < spec["load_cycles"]:
+                out["load_years_left"] = round((spec["load_cycles"] - cycles) / rate / 8766, 1)
+    return out

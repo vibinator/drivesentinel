@@ -21,6 +21,7 @@ import sys
 import time
 import urllib.request
 import zipfile
+import zlib
 
 import features
 
@@ -106,7 +107,8 @@ class Builder:
         self.log = log
         self.models = {}            # model -> [drive_days, failures, set(serials), capacity]
         self.fail_date = {}         # serial -> failure date
-        self.samples = []           # (label, model, {attr: raw})
+        self.samples = []           # (label, model, {attr: raw}, serial)
+        self._norm = {}             # raw model string -> normalized (regex is slow per row)
         self.first_day = self.last_day = None
 
     def process(self, zip_paths, progress=None):
@@ -140,11 +142,15 @@ class Builder:
             i_attr = {a: col.get(f"smart_{a}_raw") for a in features.ATTRS}
             nfirst = max(i_serial, i_model, i_cap, i_fail) + 1
             models, fail_date, rng, neg_rate = self.models, self.fail_date, self.rng, self.neg_rate
+            norm = self._norm
             for line in f:
                 parts = line.split(",", nfirst)
                 if len(parts) <= nfirst - 1:
                     continue
-                model = features.normalize_model(parts[i_model])
+                raw_model = parts[i_model]
+                model = norm.get(raw_model)
+                if model is None:
+                    model = norm[raw_model] = features.normalize_model(raw_model)
                 serial = parts[i_serial]
                 failed = parts[i_fail] == "1"
                 m = models.get(model)
@@ -167,7 +173,7 @@ class Builder:
                 full = line.rstrip("\r\n").split(",")
                 raw = {a: _int(full[ix]) if ix is not None and ix < len(full) else None
                        for a, ix in i_attr.items()}
-                self.samples.append((label, model, raw))
+                self.samples.append((label, model, raw, serial))
 
     # ---------------------------------------------------------------- outputs
     def model_stats(self):
@@ -216,15 +222,27 @@ class Builder:
         neg = [s for s in self.samples if s[0] == 0]
         if len(pos) < 50:
             raise RuntimeError(f"Only {len(pos)} positive samples; use more quarters")
-        data = pos + neg
-        self.rng.shuffle(data)
-        X = [features.vector(raw, afr.get(model, fleet)) for _, model, raw in data]
-        y = [lab for lab, _, _ in data]
-        split = int(len(X) * 0.8)
+        # Hold out 20% of *drives* (not rows): a drive's daily records are near-duplicates,
+        # so a row-level split would leak and overstate accuracy.
+        train = [s for s in pos + neg if zlib.crc32(s[3].encode()) % 5]
+        test = [s for s in pos + neg if not zlib.crc32(s[3].encode()) % 5]
+        self.rng.shuffle(train)
+        data = train + test
+        X = [features.vector(raw, afr.get(model, fleet)) for _, model, raw, _ in data]
+        y = [s[0] for s in data]
+        split = len(train)
         mu, sd = _standardize_params(X[:split])
         Z = [[(v - m) / s for v, m, s in zip(row, mu, sd)] for row in X]
         w = _irls(Z[:split], y[:split], l2=l2, log=self.log)
-        auc = _auc([_dot(w, z) for z in Z[split:]], y[split:])
+        scores = [_dot(w, z) for z in Z[split:]]
+        auc = _auc(scores, y[split:])
+        # At the 1% "warning" threshold: share of soon-to-fail drive-days caught, and share of
+        # healthy drive-days flagged (scores are on the subsampled scale, hence the offset).
+        cut = math.log(0.01 / 0.99) - math.log(self.neg_rate)
+        tp = sum(1 for sc, t in zip(scores, y[split:]) if t and sc >= cut)
+        fp = sum(1 for sc, t in zip(scores, y[split:]) if not t and sc >= cut)
+        n_pos = sum(y[split:]) or 1
+        n_neg = (len(scores) - sum(y[split:])) or 1
         # prior correction for negative subsampling: logit_true = logit_sample + ln(rate)
         intercept = w[0] + math.log(self.neg_rate)
         return {
@@ -234,6 +252,8 @@ class Builder:
             "mean": [round(v, 6) for v in mu], "std": [round(v, 6) for v in sd],
             "weights": [round(v, 6) for v in w[1:]], "intercept": round(intercept, 6),
             "auc": round(auc, 4), "positives": len(pos), "negatives": len(neg),
+            "holdout": "20% of drives", "recall_at_1pct": round(tp / n_pos, 3),
+            "false_alarm_rate_at_1pct": round(fp / n_neg, 4),
             "negative_sampling_rate": self.neg_rate,
             "trained_on": f"Backblaze {self.first_day.isoformat()} to {self.last_day.isoformat()}",
             "trained_at": dt.date.today().isoformat(),

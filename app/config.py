@@ -12,6 +12,7 @@ DEFAULTS = {
     "devices": "",                    # "" = auto-detect, or "/dev/sda:sat,/dev/nvme0"
     "skip_standby": True,             # do not wake sleeping disks
     "retention_days": 365,            # history kept in the database
+    "maintenance_window": "",         # e.g. "01:00-06:00": when extended tests/benchmarks may start
     # Thresholds
     "hdd_temp_warn": 50,
     "hdd_temp_crit": 58,

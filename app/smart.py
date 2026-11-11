@@ -146,6 +146,7 @@ def normalize(raw, dev, dtype):
         "capacity": (raw.get("user_capacity") or {}).get("bytes")
                     or raw.get("nvme_total_capacity") or 0,
         "rotation_rate": rotation,
+        "logical_block_size": raw.get("logical_block_size") or 512,
         "form_factor": (raw.get("form_factor") or {}).get("name"),
         "interface_speed": ((raw.get("interface_speed") or {}).get("current") or {}).get("string"),
         "is_ssd": is_ssd,

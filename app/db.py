@@ -127,6 +127,12 @@ class DB:
         cutoff = int(time.time()) - retention_days * 86400
         self._exec("DELETE FROM snapshots WHERE ts<?", (cutoff,))
         self._exec("DELETE FROM events WHERE ts<?", (cutoff,))
+        self._exec("DELETE FROM benchmarks WHERE ts<?", (cutoff,))
+        # Trend analysis only uses the last 30 days at full resolution; thin older
+        # snapshots to one per drive per 6 hours to keep the database small.
+        old = int(time.time()) - 30 * 86400
+        self._exec("""DELETE FROM snapshots WHERE ts<? AND id NOT IN (
+                        SELECT MIN(id) FROM snapshots WHERE ts<? GROUP BY serial, ts/21600)""", (old, old))
 
     # ---- benchmarks ---------------------------------------------------
     def add_benchmark(self, serial, ts, result):

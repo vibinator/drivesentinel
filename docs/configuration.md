@@ -17,7 +17,8 @@ Saving with the mask unchanged keeps the stored value.
 | `scan_interval_min` | `60` | Minutes between SMART collections (minimum 5) |
 | `devices` | `""` | Empty = auto-detect. Otherwise a comma-separated list of `device[:type]`, e.g. `/dev/sda:sat,/dev/nvme0` |
 | `skip_standby` | `true` | Don't wake disks in standby (`smartctl -n standby`) |
-| `retention_days` | `365` | How long snapshots and events are kept |
+| `retention_days` | `365` | How long snapshots, benchmarks and events are kept. Snapshots older than 30 days are thinned to one per drive per 6 hours. |
+| `maintenance_window` | `""` | When scheduled extended self-tests and benchmarks may start, e.g. `01:00-06:00` (may cross midnight). Empty = any time. |
 
 ### Thresholds
 | Key | Default | Description |
@@ -31,7 +32,10 @@ Saving with the mask unchanged keeps the stored value.
 | `short_test_interval_days` | `7` | Days between short self-tests (0 = off) |
 | `long_test_interval_days` | `30` | Days between extended self-tests (0 = off). An extended test also resets the short-test timer. |
 
-The first run of each test type is staggered to about 6 hours after a drive is discovered.
+Short tests first run about 6 hours after a drive is discovered. Extended tests are staggered:
+the first ones are spread one drive per day, only one drive runs an extended test at a time,
+and they only start inside the maintenance window. A test that fails to start is retried the
+next day.
 
 ### Benchmarks
 | Key | Default | Description |
