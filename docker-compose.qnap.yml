@@ -1,0 +1,22 @@
+# DriveSentinel for QNAP Container Station
+#
+# Container Station > Applications > Create > paste this file > Create
+# Then open http://<NAS-IP>:8090
+#
+# The image supports Intel/AMD (amd64) and ARM (arm64) QNAP models.
+services:
+  drivesentinel:
+    image: ghcr.io/vibinator/drivesentinel:latest
+    container_name: drivesentinel
+    restart: unless-stopped
+    privileged: true                      # required for SMART access to the disks
+    ports:
+      - "8090:8090"
+    volumes:
+      - /share/Container/drivesentinel/data:/data   # database, settings, imported datasets
+      - /dev:/dev                                   # lets the container see every disk
+      - /run/udev:/run/udev:ro
+    environment:
+      - TZ=America/New_York               # change to your timezone
+      # - AUTH_USER=admin                 # optional login for the web UI
+      # - AUTH_PASS=change-me

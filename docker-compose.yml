@@ -1,0 +1,22 @@
+services:
+  drivesentinel:
+    build: .
+    image: drivesentinel:latest
+    container_name: drivesentinel
+    restart: unless-stopped
+    # Raw SMART access to disks requires privileged mode (ATA/NVMe passthrough ioctls)
+    privileged: true
+    ports:
+      - "8090:8090"
+    volumes:
+      - /dev:/dev                       # lets the container see every disk, incl. hot-swapped ones
+      - /run/udev:/run/udev:ro
+      - ./data:/data                    # database, settings, optional model_stats.json override
+    environment:
+      - TZ=America/New_York             # change to your timezone
+      # - AUTH_USER=admin               # optional HTTP basic auth for the web UI
+      # - AUTH_PASS=change-me
+      # - MOCK=1                        # demo mode with simulated drives
+      # Any setting can also be preset via env, e.g.:
+      # - SCAN_INTERVAL_MIN=30
+      # - NTFY_URL=https://ntfy.sh/my-nas-alerts
