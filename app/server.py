@@ -16,7 +16,7 @@ import raid
 import reliability
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 
 def drive_card(d):
@@ -124,6 +124,20 @@ def make_handler(app):
                 return self._send(200, {"arrays": mon.arrays, "drives": drives})
             if p == "/api/backblaze":
                 return self._send(200, mon.bb_job)
+            if p == "/api/diagnostics":
+                import smart
+                diag = {"version": VERSION, "mock": mon.mock, "pools": raid.diagnostics(),
+                        "devices": [list(d) for d in mon.backend.scan_devices(cfg["devices"])],
+                        "skipped": mon.last_skipped, "errors": mon.last_errors}
+                if not mon.mock:
+                    diag["smartctl_scan"], _ = smart._run(["--scan-open", "-j"], timeout=60)
+                    ver, _ = smart._run(["--version", "-j"], timeout=20)
+                    diag["smartctl_version"] = (ver or {}).get("smartctl", {}).get("version")
+                diag["drives"] = [{"device": d["device"], "dev_type": d["dev_type"], "model": d["model"],
+                                   "protocol": d["protocol"], "state": d["state"],
+                                   "attributes": len((d.get("summary") or {}).get("attributes") or [])}
+                                  for d in db.list_drives()]
+                return self._send(200, diag)
             if p == "/api/drives":
                 return self._send(200, [drive_card(d) for d in db.list_drives()])
             m = re.fullmatch(r"/api/drives/([^/]+)(/history|/raw)?", p)

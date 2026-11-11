@@ -180,8 +180,9 @@ function poolsSection(arr) {
       return `<div class="pool ${cls}">
         <div class="row" style="gap:8px"><b class="mono" style="font-size:14px">${esc(a.name)}</b><span class="badge plain st-unknown">${esc((a.level || "").toUpperCase())}</span>
           <span class="spacer"></span><span class="badge">${esc(a.status)}</span></div>
-        <div class="muted small">${fmtBytes(a.size_bytes)} · ${a.members.length} member${a.members.length > 1 ? "s" : ""} · ${left == null ? "" : left === 0 ? `<b style="color:var(--critical)">no redundancy left</b>` : `survives ${left} more disk failure${left > 1 ? "s" : ""}`}</div>
+        <div class="muted small">${a.zfs ? `ZFS pool · state ${esc(a.state.toUpperCase())}` : `${fmtBytes(a.size_bytes)} · ${a.members.length} member${a.members.length > 1 ? "s" : ""} · ${left == null ? "" : left === 0 ? `<b style="color:var(--critical)">no redundancy left</b>` : `survives ${left} more disk failure${left > 1 ? "s" : ""}`}`}</div>
         ${a.sync_pct != null ? `<div class="row small" style="margin-top:2px"><span>${esc(a.sync)} ${a.sync_pct}%</span><span class="spacer"></span><span class="muted">${a.sync_eta_min ? `~${(a.sync_eta_min / 60).toFixed(1)} h left` : ""}</span></div><div class="progress"><div style="width:${a.sync_pct}%"></div></div>` : ""}
+        ${a.zfs ? `<div class="muted small">Member disks aren't visible from inside the container. Check them in Storage &amp; Snapshots.</div>` : ""}
         <div class="members">${a.members.map((m) => {
           const d = arr.drives[m.disk] || {};
           const mc = m.failed ? "st-failing" : `st-${d.state === "missing" ? "missing" : d.status || "unknown"}`;

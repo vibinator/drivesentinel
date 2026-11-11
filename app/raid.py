@@ -109,17 +109,69 @@ def _classify(a):
     return a
 
 
+ZFS_KSTAT = os.environ.get("ZFS_KSTAT_PATH", "/proc/spl/kstat/zfs")
+ZFS_STATUS = {"ONLINE": "healthy", "DEGRADED": "degraded", "FAULTED": "failed", "UNAVAIL": "failed",
+              "SUSPENDED": "failed", "REMOVED": "failed", "OFFLINE": "failed"}
+
+
+def read_zfs(base=None):
+    """ZFS pool health (QuTS hero) from the kernel's kstat files.
+
+    Only the pool state is visible from inside a container (member disks need `zpool status`,
+    which isn't available here), so pools are reported without a member list.
+    """
+    base = base or ZFS_KSTAT
+    pools = []
+    try:
+        names = sorted(os.listdir(base))
+    except OSError:
+        return []
+    for name in names:
+        state_file = os.path.join(base, name, "state")
+        if not os.path.isfile(state_file):
+            continue
+        try:
+            with open(state_file, encoding="utf-8", errors="replace") as f:
+                state = f.read().strip().upper()
+        except OSError:
+            continue
+        pools.append({"name": name, "state": state.lower(), "level": "zfs", "members": [],
+                      "size_bytes": None, "slots": None, "active": None, "map": "",
+                      "sync": None, "sync_pct": None, "sync_eta_min": None, "sync_speed": None,
+                      "role": "data", "missing": 0 if state == "ONLINE" else None,
+                      "failed_members": [], "redundancy": None, "redundancy_left": None,
+                      "status": ZFS_STATUS.get(state, "unknown"), "zfs": True})
+    return pools
+
+
 def read(path=None, text=None):
+    zfs = read_zfs() if text is None else []
     if text is None:
         path = path or MDSTAT
         if not os.path.exists(path):
-            return []
+            return zfs
         try:
             with open(path, encoding="utf-8", errors="replace") as f:
                 text = f.read()
         except OSError:
-            return []
-    return parse(text)
+            return zfs
+    return parse(text) + zfs
+
+
+def diagnostics():
+    """Raw sources used for pool detection, for troubleshooting."""
+    out = {"mdstat": None, "zfs_kstat": None}
+    try:
+        with open(MDSTAT, encoding="utf-8", errors="replace") as f:
+            out["mdstat"] = f.read()
+    except OSError as e:
+        out["mdstat"] = f"unavailable: {e}"
+    try:
+        out["zfs_kstat"] = {n: sorted(os.listdir(os.path.join(ZFS_KSTAT, n)))
+                            for n in os.listdir(ZFS_KSTAT) if os.path.isdir(os.path.join(ZFS_KSTAT, n))}
+    except OSError as e:
+        out["zfs_kstat"] = f"unavailable: {e}"
+    return out
 
 
 def membership(arrays):

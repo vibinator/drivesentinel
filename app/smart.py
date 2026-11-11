@@ -65,6 +65,15 @@ def read_device(dev, dtype=None, skip_standby=True):
     if skip_standby:
         args += ["-n", "standby"]
     data, err = _run(args + _dev_args(dev, dtype))
+    # SATA disks behind a SCSI layer (QNAP reports them as "-d scsi") only return SCSI
+    # inquiry data: no SMART attributes, temperature 0. Retry with SAT passthrough and
+    # keep that result when it yields real ATA SMART data; genuine SAS disks fail it.
+    if dtype in (None, "scsi") and data and (data.get("device") or {}).get("protocol") == "SCSI" \
+            and "ata_smart_attributes" not in data:
+        retry, _ = _run(args + _dev_args(dev, "sat"))
+        if retry and ("ata_smart_attributes" in retry or _is_standby(retry)):
+            retry["_dev_type"] = "sat"
+            return retry
     # If auto-detection could not identify the disk, retry common passthrough types
     # (USB/SATA bridges and some NAS backplanes need -d sat; SAS needs -d scsi).
     if not dtype and (data is None or (not data.get("serial_number") and not _is_standby(data))):
@@ -115,7 +124,7 @@ def normalize(raw, dev, dtype):
         return {"sleeping": True, "device": dev,
                 "serial": raw.get("serial_number")}
 
-    dtype = dtype or raw.get("_dev_type")
+    dtype = raw.get("_dev_type") or dtype   # the type that actually worked
     serial = raw.get("serial_number")
     if not serial:
         # not a SMART-capable disk (e.g. QNAP's internal boot flash / DOM, card readers)
@@ -169,7 +178,8 @@ def normalize(raw, dev, dtype):
             "when_failed": a.get("when_failed", ""),
             "prefailure": (a.get("flags") or {}).get("prefailure", False),
         })
-    if out["temperature"] is None:
+    if not out["temperature"]:          # 0 means "not reported" (no drive runs at 0 C)
+        out["temperature"] = None
         for a in out["attributes"]:
             if a["id"] in (194, 190):
                 out["temperature"] = a["raw"]

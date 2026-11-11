@@ -4,6 +4,8 @@ A self-hosted drive health monitor for QNAP Container Station (or any Docker hos
 spirit of QNAP's DA Drive Analyzer. It runs on your NAS, needs no cloud account, and has no
 Python dependencies beyond the standard library plus `smartmontools`.
 
+**Full documentation:** [docs/](docs/README.md): [operations](docs/operations.md), [configuration](docs/configuration.md), [health model](docs/health-model.md), [architecture](docs/architecture.md), [API](docs/api.md), [development](docs/development.md).
+
 ## Features
 
 - **Automatic discovery** of every HDD, SATA SSD, NVMe and SAS drive. It uses `smartctl --scan-open`

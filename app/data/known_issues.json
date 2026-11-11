@@ -33,7 +33,7 @@
     {"id": "seagate-st3000dm001", "match": "^ST3000DM001",
      "severity": "warning", "title": "Model with a very high historical failure rate",
      "detail": "The Seagate 3TB ST3000DM001 had annual failure rates above 25% in Backblaze's fleet. Plan a replacement even if SMART looks clean."},
-    {"id": "desktop-drive-nas", "match": "^(ST\\d+DM\\d|WDC WD\\d+EZ(AZ|EX|RZ))",
+    {"id": "desktop-drive-nas", "match": "^(ST\\d+DM\\d|WDC WD\\d+EZ(EX|RZ))",
      "severity": "info", "title": "Desktop-class drive",
      "detail": "Desktop drives are rated for lighter workloads (~55 TB/yr). They lack RAID error-recovery control (TLER/ERC), so a slow sector can get the whole drive dropped from an array."}
   ]

@@ -40,6 +40,7 @@
     {"match": "WUH72|HUH72|Ultrastar", "name": "WD/HGST Ultrastar (enterprise)", "afr": 0.6, "source": "Backblaze family average"},
     {"match": "^TOSHIBA (MG|MD)", "name": "Toshiba enterprise (MG/MD)", "afr": 1.0, "source": "Backblaze family average"},
     {"match": "^TOSHIBA HDW(Q|G|N)|N300", "name": "Toshiba N300 (NAS)", "afr": 1.2, "source": "Brand estimate"},
+    {"match": "^WDC WD\\d+(EZAZ|EMAZ|EMFZ|EDAZ|EDBZ)", "name": "WD white label (shucked external, CMR)", "afr": 1.0, "source": "Brand estimate"},
     {"match": "^WDC WD\\d+(EZ|PURZ)", "name": "WD Blue / Purple (desktop/surveillance)", "afr": 1.8, "source": "Brand estimate"}
   ],
   "defaults": {
