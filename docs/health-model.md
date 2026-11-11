@@ -191,8 +191,15 @@ distort results.
   kept separate from `data` pools.
 - **Status:** healthy, syncing, rebuilding, degraded or failed. Redundancy left is computed
   per level (RAID1: n−1, RAID5: 1, RAID6: 2, RAID0: 0).
-- **ZFS pools:** state from `/proc/spl/kstat/zfs/<pool>/state` (ONLINE, DEGRADED, FAULTED…).
-  Member disks aren't visible from inside a container.
+- **ZFS pools (QuTS hero):** `zfs.py` runs the NAS's own `zpool status` and `zpool list`
+  (read-only) through `nsenter`, which needs `pid: host` in the compose file. It parses each
+  pool's state, vdev layout (RAIDZ1/2/3, mirror, stripe; cache, log and spare devices),
+  scrub or resilver progress, and per-disk read, write and checksum error counts. Members are
+  matched to drives by device name, serial number or WWN in the member's label. Without host
+  access it falls back to the pool state from `/proc/spl/kstat/zfs`, where the kernel
+  provides it.
+- **ZFS errors on a disk** add a critical finding on a log scale (0.15 + 0.06 · log₂(1+n),
+  cap 0.6). Checksum errors in particular often show up before SMART reports anything.
 - **Per drive:** if a drive is marked FAILED by the RAID layer, that adds p = 0.5. A drive in a
   degraded pool with no redundancy left gets a warning, and a drive already at warning is
   escalated to critical.

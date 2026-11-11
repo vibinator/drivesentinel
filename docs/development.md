@@ -102,6 +102,10 @@ and at phone width), and `MOCK_RAID=degraded` for the pool alerts.
 
 ## Changelog
 
+- **1.4.0:** ZFS pool monitoring for QuTS hero through the NAS's `zpool` tool (needs
+  `pid: host`): pool health, member disks, resilver/scrub progress, and per-disk ZFS error
+  counts feeding the risk score. Compose file now pulls the newest image on recreate.
+
 - **1.3.0:** Extended self-tests now run one drive at a time (they used to start on every
   drive at once) and respect a new maintenance window. Fixed false failure predictions from
   noisy attributes, from 1% SSD wear steps and from past overheating. Benchmarks confirm a

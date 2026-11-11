@@ -145,7 +145,12 @@ def read_zfs(base=None):
 
 
 def read(path=None, text=None):
-    zfs = read_zfs() if text is None else []
+    zfs = []
+    if text is None:
+        import zfs as zfs_host
+        zfs = zfs_host.read()           # full detail via the host's zpool tool, when available
+        if zfs is None:
+            zfs = read_zfs()            # fallback: pool state only, from kernel stats
     if text is None:
         path = path or MDSTAT
         if not os.path.exists(path):
@@ -160,7 +165,8 @@ def read(path=None, text=None):
 
 def diagnostics():
     """Raw sources used for pool detection, for troubleshooting."""
-    out = {"mdstat": None, "zfs_kstat": None}
+    import zfs as zfs_host
+    out = {"mdstat": None, "zfs_kstat": None, "zpool": zfs_host.diagnostics()}
     try:
         with open(MDSTAT, encoding="utf-8", errors="replace") as f:
             out["mdstat"] = f.read()
@@ -181,7 +187,8 @@ def membership(arrays):
         for m in a["members"]:
             out.setdefault(m["disk"], []).append({
                 "array": a["name"], "level": a["level"], "status": a["status"], "role": a["role"],
-                "redundancy_left": a["redundancy_left"], "member_failed": m["failed"], "spare": m["spare"]})
+                "redundancy_left": a["redundancy_left"], "member_failed": m["failed"], "spare": m["spare"],
+                "errors": {k: m.get(k, 0) for k in ("read", "write", "cksum")} if a.get("zfs") else None})
     return out
 
 

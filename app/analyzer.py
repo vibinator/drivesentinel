@@ -263,6 +263,13 @@ def analyze(summary, history, cfg, now=None):
     for r in summary.get("raid") or []:
         if r["role"] != "data":
             continue
+        errs = r.get("errors") or {}
+        n_err = sum(errs.values())
+        if n_err and not r["member_failed"]:
+            detail = ", ".join(f"{v} {k}" for k, v in (("read", errs.get("read")), ("write", errs.get("write")),
+                                                       ("checksum", errs.get("cksum"))) if v)
+            add(_log_scale(n_err, 0.15, 0.06, 0.6), "critical",
+                f"ZFS recorded errors on this disk in {r['array']}: {detail}")
         if r["member_failed"]:
             add(0.5, "critical", f"Marked as FAILED by the RAID layer in {r['array']}")
         elif r["status"] in ("degraded", "rebuilding") and r["redundancy_left"] == 0:

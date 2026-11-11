@@ -1,7 +1,8 @@
 FROM python:3.12-alpine
 
 # smartmontools provides smartctl (with JSON output); tzdata for local timestamps in alerts
-RUN apk add --no-cache smartmontools tzdata
+# util-linux provides nsenter (used to run the host's zpool for ZFS pool status)
+RUN apk add --no-cache smartmontools tzdata util-linux
 # refresh the drive database so newer models are recognised (best effort)
 RUN (update-smart-drivedb --no-verify 2>/dev/null || update-smart-drivedb 2>/dev/null) || true
 

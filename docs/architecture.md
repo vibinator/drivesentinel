@@ -50,7 +50,8 @@ mdstat text and benchmark results, so the same code paths run in both.
 | `features.py` | Feature vector shared by training and inference |
 | `ml.py` | Loads the model JSON and computes the probability and drivers |
 | `backblaze.py` | Backblaze downloader, AFR builder, logistic-regression trainer (also a CLI) |
-| `raid.py` | `/proc/mdstat` parser, ZFS kstat reader, membership, diagnostics |
+| `raid.py` | `/proc/mdstat` parser, ZFS kstat fallback, membership, diagnostics |
+| `zfs.py` | ZFS pools via the host's `zpool` (nsenter or chroot), parser, member-to-drive matching |
 | `bench.py` | O_DIRECT read benchmark and baseline evaluation |
 | `issues.py` | Known-issue matching |
 | `peers.py` | Fleet comparison |

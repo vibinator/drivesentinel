@@ -136,6 +136,7 @@ def normalize(raw, dev, dtype):
     is_ssd = protocol == "NVMe" or rotation == 0
     out = {
         "serial": serial,
+        "wwn": _wwn(raw.get("wwn")),
         "device": dev,
         "dev_type": dtype or dev_info.get("type"),
         "protocol": protocol,
@@ -256,6 +257,14 @@ def normalize(raw, dev, dtype):
             out["power_on_hours"] = (raw.get("power_on_time") or {}).get("hours")
 
     return out
+
+
+def _wwn(w):
+    """smartctl's {naa, oui, id} -> the usual 16-hex-digit form (e.g. 5000c500e1f2a3b4)."""
+    try:
+        return f"{w['naa']:x}{w['oui']:06x}{w['id']:09x}"
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def metrics_from(summary):

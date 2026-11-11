@@ -166,6 +166,7 @@ async function renderDash() {
   view.querySelectorAll("[data-f]").forEach((b) => b.onclick = () => { dashFilter = b.dataset.f; renderDash(); });
 }
 let dashFilter = "all";
+const levelName = (l) => ({ raidz: "RAID 5 (RAIDZ1)", raidz1: "RAID 5 (RAIDZ1)", raidz2: "RAID 6 (RAIDZ2)", raidz3: "RAID-TP (RAIDZ3)", mirror: "RAID 1 (mirror)", stripe: "Single / RAID 0", mixed: "ZFS (mixed)" }[l] || (l || "").toUpperCase());
 const ARRAY_ST = { healthy: "good", syncing: "info", rebuilding: "warning", degraded: "critical", failed: "failing" };
 function poolsSection(arr) {
   const data = arr.arrays.filter((a) => a.role === "data");
@@ -178,15 +179,17 @@ function poolsSection(arr) {
       const cls = `st-${ARRAY_ST[a.status] || "unknown"}`;
       const left = a.redundancy_left;
       return `<div class="pool ${cls}">
-        <div class="row" style="gap:8px"><b class="mono" style="font-size:14px">${esc(a.name)}</b><span class="badge plain st-unknown">${esc((a.level || "").toUpperCase())}</span>
+        <div class="row" style="gap:8px"><b class="mono" style="font-size:14px">${esc(a.name)}</b><span class="badge plain st-unknown">${esc(levelName(a.level))}</span>
           <span class="spacer"></span><span class="badge">${esc(a.status)}</span></div>
-        <div class="muted small">${a.zfs ? `ZFS pool · state ${esc(a.state.toUpperCase())}` : `${fmtBytes(a.size_bytes)} · ${a.members.length} member${a.members.length > 1 ? "s" : ""} · ${left == null ? "" : left === 0 ? `<b style="color:var(--critical)">no redundancy left</b>` : `survives ${left} more disk failure${left > 1 ? "s" : ""}`}`}</div>
+        <div class="muted small">${a.zfs && !a.members.length ? `ZFS pool · state ${esc(a.state.toUpperCase())}` : `${fmtBytes(a.size_bytes)} · ${a.members.length} member${a.members.length > 1 ? "s" : ""} · ${left == null ? "" : left === 0 ? `<b style="color:var(--critical)">no redundancy left</b>` : `survives ${left} more disk failure${left > 1 ? "s" : ""}`}`}</div>
         ${a.sync_pct != null ? `<div class="row small" style="margin-top:2px"><span>${esc(a.sync)} ${a.sync_pct}%</span><span class="spacer"></span><span class="muted">${a.sync_eta_min ? `~${(a.sync_eta_min / 60).toFixed(1)} h left` : ""}</span></div><div class="progress"><div style="width:${a.sync_pct}%"></div></div>` : ""}
-        ${a.zfs ? `<div class="muted small">Member disks aren't visible from inside the container. Check them in Storage &amp; Snapshots.</div>` : ""}
+        ${a.zfs && !a.members.length ? `<div class="muted small">Add <code>pid: host</code> to the YAML to see this pool's disks, rebuild progress and ZFS error counts.</div>` : ""}
+        ${a.zfs && a.errors && !/^No known/i.test(a.errors) ? `<div class="small" style="color:var(--critical)">${esc(a.errors)}</div>` : ""}
         <div class="members">${a.members.map((m) => {
           const d = arr.drives[m.disk] || {};
           const mc = m.failed ? "st-failing" : `st-${d.state === "missing" ? "missing" : d.status || "unknown"}`;
-          const inner = `<span class="dot"></span>${esc(m.disk)}${m.spare ? " (spare)" : ""}${m.failed ? " FAILED" : ""}`;
+          const ze = (m.read || 0) + (m.write || 0) + (m.cksum || 0);
+          const inner = `<span class="dot"></span>${esc(m.disk)}${m.spare ? " (spare)" : ""}${m.section && m.section !== "data" && !m.spare ? ` (${esc(m.section)})` : ""}${m.failed ? " FAILED" : ""}${ze ? ` · ${ze} err` : ""}`;
           return d.serial ? `<a class="member ${mc}" href="#/drive/${encodeURIComponent(d.serial)}" title="${esc(d.model)}">${inner}</a>` : `<span class="member ${mc}">${inner}</span>`;
         }).join("")}</div></div>`;
     }).join("")}</div>`;
@@ -243,7 +246,7 @@ async function renderDrive(serial) {
     ["Powered on", `${fmtHours(s.power_on_hours)} (${fmtNum(s.power_on_hours)} h)`], ["Power cycles", fmtNum(s.power_cycles)],
     ["Failure risk", `${a.risk}%`], ["Endurance left", a.life_left != null ? `${a.life_left}%` : "n/a"],
     ["First seen", fmtDate(det.first_seen)], ["Last scanned", fmtAgo(c.last_seen)],
-    ["Storage pool", (a.raid || []).filter((r) => r.role === "data").map((r) => `${r.array} (${(r.level || "").toUpperCase()}, ${r.status})`).join(", ") || "—"],
+    ["Storage pool", (a.raid || []).filter((r) => r.role === "data").map((r) => `${r.array} (${levelName(r.level)}, ${r.status})`).join(", ") || "—"],
     ["Performance", det.bench_eval ? `${det.bench_eval.score}% of baseline` : "Not benchmarked yet"],
     ...usageFacts(a.usage || {}),
   ];

@@ -12,6 +12,8 @@
        container_name: drivesentinel
        restart: unless-stopped
        privileged: true
+       pid: host
+       pull_policy: always
        ports:
          - "8090:8090"
        volumes:
@@ -29,6 +31,8 @@
 | Option | Reason |
 |---|---|
 | `privileged: true` | SMART and NVMe passthrough need raw device ioctls. Without it no drives are found. |
+| `pid: host` | QuTS hero only: lets the app run the NAS's own `zpool status` (read-only) to see ZFS pools, their disks, rebuild progress and error counts. Not needed on QTS. |
+| `pull_policy: always` | Checks for a newer image every time the application is recreated. |
 | `/dev:/dev` | Exposes every disk, including hot-swapped ones, to `smartctl`. |
 | `/run/udev` (read-only) | Helps `smartctl` identify devices. |
 | `/data` volume | Holds the database, settings and imported datasets. Without it, history is lost on recreate. |
@@ -140,7 +144,7 @@ kstat), skipped devices, scan errors, and how many SMART attributes each drive r
 | HDDs show 0 attributes, no temperature or age | The disk is being read as `-d scsi`. Since v1.2.0, DriveSentinel retries with `-d sat` automatically. If it persists, set **Settings → Devices** to e.g. `/dev/sda:sat,/dev/sdb:sat`. |
 | A drive is listed under "skipped" | It has no SMART data (QNAP's boot flash/DOM, card readers). This is normal. |
 | Drives show "Sleeping" | They are in standby and **Don't wake sleeping disks** is on. They update when they spin up. |
-| Storage pools section is empty or only shows system arrays | QuTS hero uses ZFS. Pool state comes from `/proc/spl/kstat/zfs/<pool>/state`; if diagnostics shows that as unavailable, the kernel doesn't expose it to containers. |
+| Storage pools section is empty or only shows system arrays | QuTS hero uses ZFS, which a container can't see directly. Add `pid: host` to the YAML and recreate. Then check `pools.zpool` in `/api/diagnostics`: `method` shows how the NAS was queried, `error` why it failed, and `zpool_status` the raw output. |
 | Benchmark failed | The drive is busy, or isn't a block device (e.g. behind a RAID controller). Check the drive's events for the error. |
 | Backblaze update failed | Not enough free space in `/data`, or no internet access. The error is shown in Settings. |
 | UI asks for a password | `AUTH_USER` and `AUTH_PASS` are set in the YAML. |

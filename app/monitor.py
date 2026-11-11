@@ -82,6 +82,10 @@ class Monitor:
         errors, skipped, seen = [], [], set()
         try:
             self.arrays = raid.read(text=self.backend.mdstat_text(ts)) if self.mock else raid.read()
+            zpools = [a for a in self.arrays if a.get("zfs") and a["members"]]
+            if zpools:
+                import zfs
+                zfs.resolve_members(zpools, self.db.list_drives())
             self._membership = raid.membership(self.arrays)
             devices = self.backend.scan_devices(self.cfg["devices"])
             if not devices:

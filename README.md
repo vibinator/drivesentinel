@@ -29,7 +29,8 @@ Python dependencies beyond the standard library plus `smartmontools`.
 - **One-click Backblaze update**: in Settings, *Update from Backblaze* downloads the latest
   quarters, recomputes failure rates per model and retrains the model on your NAS. You can also
   run it by hand: `python backblaze.py --quarters 2 --out /data`.
-- **RAID / storage pool monitoring**: reads QNAP's md-RAID arrays from `/proc/mdstat`. It tracks
+- **RAID / storage pool monitoring**: reads QNAP's md-RAID arrays from `/proc/mdstat` (QTS)
+  and ZFS pools through the NAS's `zpool` tool (QuTS hero, needs `pid: host`). It tracks
   degraded, rebuilding and resyncing states, rebuild progress and ETA, and the redundancy left.
   A drive in an array with no redundancy left is escalated, and the pool's member disks link to
   their drive pages.
